@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Function to check if a key pair exists
+check_key_pair() {
+    local key_name=$1
+    aws ec2 describe-key-pairs --key-names $key_name --query 'KeyPairs[0].KeyName' --output text 2>/dev/null
+}
+
+# Function to check if a security group exists
+check_security_group() {
+    local sg_name=$1
+    aws ec2 describe-security-groups --group-names $sg_name --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null
+}
+
+# Ask user for details
+read -p "Enter the number of EC2 instances to launch: " INSTANCE_COUNT
+read -p "Enter the AMI ID: " AMI_ID
+read -p "Enter the instance type (e.g., t2.micro): " INSTANCE_TYPE
+read -p "Enter the subnet ID: " SUBNET_ID
+read -p "Enter the key pair name: " KEY_NAME
+read -p "Enter the security group name: " SECURITY_GROUP_NAME
+
+# Check if the key pair exists
+KEY_EXISTS=$(check_key_pair $KEY_NAME)
+if [ "$KEY_EXISTS" == "$KEY_NAME" ]; then
+    echo "Key pair $KEY_NAME already exists."
+else
+    echo "Key pair $KEY_NAME does not exist. Creating key pair..."
+    aws ec2 create-key-pair --key-name $KEY_NAME --query 'KeyMaterial' --output text > "${KEY_NAME}.pem"
+    chmod 400 "${KEY_NAME}.pem"
+    echo "Key pair created and saved as ${KEY_NAME}.pem"
+fi
+
+# Check if the security group exists
+SG_ID=$(check_security_group $SECURITY_GROUP_NAME)
+if [ "$SG_ID" != "None" ]; then
+    echo "Security group $SECURITY_GROUP_NAME already exists with ID: $SG_ID"
+else
+    echo "Security group $SECURITY_GROUP_NAME does not exist. Creating security group..."
+    SG_ID=$(aws ec2 create-security-group --group-name $SECURITY_GROUP_NAME --description "User-defined security group" --query 'GroupId' --output text)
+    echo "Security group created with ID: $SG_ID"
+
+    # Add rules to the security group
+    echo "Adding rules to security group: $SECURITY_GROUP_NAME"
+    aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
+    aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0
+    echo "Rules added: SSH (port 22) and HTTP (port 80)"
+fi
+
+# Create an array to store instance IDs
+INSTANCE_IDS=()
+
+# Loop to launch instances with custom tags
+for ((i = 1; i <= INSTANCE_COUNT; i++)); do
+    read -p "Enter the Name tag for instance #$i: " TAG_NAME
+
+    echo "Launching EC2 instance #$i with AMI: $AMI_ID and Instance Type: $INSTANCE_TYPE"
+    INSTANCE_ID=$(aws ec2 run-instances \
+        --image-id $AMI_ID \
+        --instance-type $INSTANCE_TYPE \
+        --key-name $KEY_NAME \
+        --security-group-ids $SG_ID \
+        --subnet-id $SUBNET_ID \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$TAG_NAME}]" \
+        --query 'Instances[0].InstanceId' \
+        --output text)
+
+    INSTANCE_IDS+=("$INSTANCE_ID")
+    echo "Instance #$i launched with ID: $INSTANCE_ID"
+done
+
+# Wait for all instances to be running
+echo "Waiting for all instances to reach running state..."
+aws ec2 wait instance-running --instance-ids ${INSTANCE_IDS[@]}
+echo "All instances are now running."
+
+# Display details of all instances
+echo "Fetching details of all launched instances:"
+aws ec2 describe-instances --instance-ids ${INSTANCE_IDS[@]} --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress,PrivateIpAddress,Tags[?Key==`Name`].Value]' --output table
+
+echo "All EC2 instances created successfully!"
