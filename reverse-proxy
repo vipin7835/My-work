@@ -1,0 +1,126 @@
+To set up a reverse proxy with Apache2 on AWS using two EC2 instances (one for the proxy and one for the backend service), here’s a complete step-by-step guide:
+
+Architecture Overview
+-----------------------------------------------------------------------------------------------------------------------------------------------------                                                                       
+                                                                       
+Instance 1: Apache2 Reverse Proxy (e.g., Public_IP_Proxy)
+Instance 2: Backend Service (e.g., Private_IP_Backend)
+The reverse proxy will forward requests to the backend service running on the second instance.
+
+Step 1: Launch Two AWS EC2 Instances
+  Go to the AWS Management Console and launch two EC2 instances.
+  Choose an Amazon Linux 2 or Ubuntu 20.04/22.04 AMI for both instances.
+
+  For each instance:
+      Assign a public IP to Instance 1 (Proxy).
+      Ensure Instance 2 (Backend) has a private IP (keep it private by removing an Elastic IP).
+                                                                       
+Step 2: Configure Security Groups
+      For Instance 1 (Proxy):
+        Allow inbound traffic on port 80 (HTTP) and port 22 (SSH).
+      For Instance 2 (Backend):
+        Allow inbound traffic on port 8080 (or your backend port) from the private IP of Instance 1 (Proxy) only.
+        Allow inbound traffic on port 22 (SSH) for admin access.
+                                                                       
+Step 3: Set Up Instance 2 (Backend)
+      1. SSH into Instance 2 (Backend)
+        ssh -i your-key.pem ec2-user@Instance_2_Private_IP
+      2. Install Node.js
+        sudo apt update
+        sudo apt install nodejs npm -y
+      3. Create the Backend Service
+        Create a project directory:
+        mkdir backend-service && cd backend-service
+                                                                       
+    Initialize the project:
+      npm init -y
+    Install dependencies:
+      npm install express
+    Create the server.js file:
+      vi server.js
+                                                                       
+            Add the following code:
+--------------------------------------------                                                                       
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => {
+    res.send('Hello from Backend Service!');
+});
+
+const PORT = 8080;
+app.listen(PORT, () => {
+    console.log(`Backend service running on port ${PORT}`);
+});
+---------------------------------------------
+                                                                       
+      4. Start the Backend Service
+          node server.js
+                                                                       
+Keep the service running using PM2 (optional):
+npm install -g pm2
+pm2 start server.js
+pm2 save
+pm2 startup
+********************************************************************************************
+                                                                       
+  Step 4: Set Up Instance 1 (Reverse Proxy)
+      1. SSH into Instance 1 (Proxy)
+          ssh -i your-key.pem ec2-user@Instance_1_Public_IP
+      2. Install Apache2
+          sudo apt update
+          sudo apt install apache2 -y
+      3. Enable Proxy Modules
+          sudo a2enmod proxy
+          sudo a2enmod proxy_http
+          sudo a2enmod headers
+          sudo systemctl restart apache2
+      4. Create a Reverse Proxy Configuration
+          Create a new configuration file:
+            sudo nano /etc/apache2/sites-available/reverse-proxy.conf
+------------------------------------------------------------------------                                                                       
+            Add the following configuration:
+<VirtualHost *:80>
+    ServerName localhost
+
+    # Proxy settings
+    ProxyPreserveHost On
+    ProxyPass / http://Instance_2_Private_IP:8080/
+    ProxyPassReverse / http://Instance_2_Private_IP:8080/
+
+    # Log settings (optional)
+    ErrorLog ${APACHE_LOG_DIR}/proxy-error.log
+    CustomLog ${APACHE_LOG_DIR}/proxy-access.log combined
+
+    # Security headers (optional)
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+</VirtualHost>
+--------------------------------------------------------------         
+                                                                       
+Enable the configuration:
+sudo a2ensite reverse-proxy.conf
+sudo a2dissite 000-default.conf
+sudo systemctl restart apache2
+
+Test the configuration:
+sudo apache2ctl configtest
+                                                                       
+Step 5: Test the Setup
+Access the Instance 1 Public IP from your browser or via curl:
+curl http://Instance_1_Public_IP/
+                                                                       
+You should see the response:
+Hello from Backend Service!
+                                                                       
+Step 6: Optional Enhancements
+1. Add HTTPS
+Install SSL certificates using Let’s Encrypt:
+sudo apt install certbot python3-certbot-apache -y
+sudo certbot --apache
+2. Ensure Firewall Configuration
+Use AWS Security Groups to allow only necessary traffic:
+Instance 1: Allow HTTP (port 80) and HTTPS (port 443) traffic.
+Instance 2: Allow private traffic on port 8080 from the proxy server only.
+3. Scaling
+Use an Elastic Load Balancer (ELB) in front of your proxy for better scalability and failover.
